@@ -10,7 +10,7 @@ import os
 from datetime import datetime, timedelta
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
-from sqlalchemy import String, Text, DateTime, select,Integer, func
+from sqlalchemy import String, Text, DateTime, select,Integer, func, Boolean
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -88,6 +88,24 @@ class EstadoConversacion(Base):
     # 'francisca_escalo' | 'humano_respondio' | 'admin_manual' | 'auto_retorno'
     cambiado_por: Mapped[str | None] = mapped_column(String(40), nullable=True)
     nota: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class MetricaIA(Base):
+    """
+    Métrica mínima por turno de la IA: modelo usado, latencia, si escaló a humano
+    y tokens (cuando el SDK los expone). Tabla nueva y aislada, para no tocar el
+    esquema del historial.
+    """
+    __tablename__ = "ia_metrics"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    telefono: Mapped[str] = mapped_column(String(50), index=True)
+    modelo: Mapped[str] = mapped_column(String(60))
+    latencia_ms: Mapped[int] = mapped_column(Integer)
+    escalado: Mapped[bool] = mapped_column(Boolean, default=False)
+    input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    timestamp: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
 async def inicializar_db():
@@ -354,3 +372,28 @@ async def conversaciones_para_auto_retorno(minutos: int) -> list[str]:
             if ultima_actividad < limite:
                 expiradas.append(estado.telefono)
     return expiradas
+
+
+# ════════════════════════════════════════════════════════════
+# Métricas por turno de IA
+# ════════════════════════════════════════════════════════════
+
+async def registrar_metrica(
+    telefono: str,
+    modelo: str,
+    latencia_ms: int,
+    escalado: bool = False,
+    input_tokens: int | None = None,
+    output_tokens: int | None = None,
+):
+    """Guarda una métrica del turno de IA. Nunca debe romper la respuesta al cliente."""
+    async with async_session() as session:
+        session.add(MetricaIA(
+            telefono=telefono,
+            modelo=modelo,
+            latencia_ms=latencia_ms,
+            escalado=escalado,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+        ))
+        await session.commit()

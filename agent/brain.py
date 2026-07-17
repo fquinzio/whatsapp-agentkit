@@ -8,6 +8,7 @@ y genera respuestas usando la API de Anthropic Claude.
 
 import os
 import json
+import time
 import yaml
 import logging
 from datetime import datetime
@@ -17,7 +18,7 @@ from dotenv import load_dotenv
 
 from agent import tools as tools_module
 from agent import stock as stock_module
-from agent.memory import obtener_perfil, actualizar_perfil
+from agent.memory import obtener_perfil, actualizar_perfil, registrar_metrica
 
 load_dotenv()
 logger = logging.getLogger("agentkit")
@@ -27,6 +28,9 @@ client = AsyncAnthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 
 # Máximo de idas y vueltas de tool-use por mensaje, para evitar loops infinitos
 MAX_ITERACIONES_TOOLS = 5
+
+# Modelo de Claude usado por el agente (se registra también en las métricas)
+MODELO = "claude-sonnet-4-6"
 
 DIAS_ES = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
 MESES_ES = [
@@ -321,10 +325,32 @@ async def generar_respuesta(
         "content": mensaje
     })
 
+    # Métricas del turno: latencia, tokens acumulados y si Francisca escaló a humano
+    inicio = time.monotonic()
+    total_in = 0
+    total_out = 0
+    escalado = False
+
+    async def _registrar_metrica():
+        """Registra la métrica del turno sin romper la respuesta si algo falla."""
+        if not telefono:
+            return
+        try:
+            await registrar_metrica(
+                telefono=telefono,
+                modelo=MODELO,
+                latencia_ms=int((time.monotonic() - inicio) * 1000),
+                escalado=escalado,
+                input_tokens=total_in or None,
+                output_tokens=total_out or None,
+            )
+        except Exception as e:
+            logger.warning(f"No se pudo registrar la métrica de {telefono}: {e}")
+
     try:
         for _ in range(MAX_ITERACIONES_TOOLS):
             response = await client.messages.create(
-                model="claude-sonnet-4-6",
+                model=MODELO,
                 max_tokens=1024,
                 system=system_blocks,
                 messages=mensajes,
@@ -332,6 +358,8 @@ async def generar_respuesta(
             )
 
             u = response.usage
+            total_in += getattr(u, "input_tokens", 0) or 0
+            total_out += getattr(u, "output_tokens", 0) or 0
             logger.info(
                 f"Respuesta generada ({u.input_tokens} in / {u.output_tokens} out / "
                 f"cache_write {getattr(u, 'cache_creation_input_tokens', 0)} / "
@@ -340,6 +368,7 @@ async def generar_respuesta(
 
             if response.stop_reason != "tool_use":
                 texto = "".join(bloque.text for bloque in response.content if bloque.type == "text")
+                await _registrar_metrica()
                 return texto or obtener_mensaje_fallback()
 
             # Claude pidió usar una o más herramientas: ejecutarlas y devolverle el resultado
@@ -347,6 +376,8 @@ async def generar_respuesta(
             resultados_tools = []
             for bloque in response.content:
                 if bloque.type == "tool_use":
+                    if bloque.name == "escalar_a_humano":
+                        escalado = True
                     resultado = await ejecutar_tool(bloque.name, bloque.input, telefono)
                     resultados_tools.append({
                         "type": "tool_result",
@@ -356,8 +387,10 @@ async def generar_respuesta(
             mensajes.append({"role": "user", "content": resultados_tools})
 
         logger.warning("Se alcanzó el máximo de iteraciones de tool-use sin respuesta final")
+        await _registrar_metrica()
         return obtener_mensaje_error()
 
     except Exception as e:
         logger.error(f"Error Claude API: {e}")
+        await _registrar_metrica()
         return obtener_mensaje_error()
