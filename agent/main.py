@@ -7,6 +7,7 @@ Funciona con cualquier proveedor (Meta, Twilio) gracias a la capa de providers.
 """
 
 import os
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
@@ -16,7 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
 from agent.brain import generar_respuesta
-from agent.memory import inicializar_db, guardar_mensaje, obtener_historial, obtener_ultimo_timestamp, listar_conversaciones, obtener_historial_completo, get_modo, get_estado, set_modo, MARCADOR_HUMANO
+from agent.memory import inicializar_db, guardar_mensaje, obtener_historial, obtener_ultimo_timestamp, listar_conversaciones, obtener_historial_completo, get_modo, get_estado, set_modo, MARCADOR_HUMANO, conversaciones_para_auto_retorno
 from agent.providers import obtener_proveedor
 from agent.tools import notificar_camila
 
@@ -32,6 +33,38 @@ logger = logging.getLogger("agentkit")
 proveedor = obtener_proveedor()
 PORT = int(os.getenv("PORT", 8000))
 
+# Auto-retorno: minutos de inactividad tras los cuales una conversación en modo
+# humano vuelve sola a la IA. 0 = desactivado.
+AUTO_RETORNO_MINUTOS = int(os.getenv("AUTO_RETORNO_MINUTOS", 60))
+# Cada cuánto revisa el loop en background (10 minutos)
+INTERVALO_AUTO_RETORNO_SEG = 600
+
+
+async def _loop_auto_retorno():
+    """
+    Tarea liviana en background: cada 10 min busca conversaciones en modo humano
+    inactivas por más de AUTO_RETORNO_MINUTOS y las devuelve a la IA.
+    Tolerante a fallos: nunca debe tumbar la app.
+    """
+    while True:
+        try:
+            await asyncio.sleep(INTERVALO_AUTO_RETORNO_SEG)
+            try:
+                telefonos = await conversaciones_para_auto_retorno(AUTO_RETORNO_MINUTOS)
+            except Exception as e:
+                logger.warning(f"Auto-retorno: no se pudieron consultar conversaciones: {e}")
+                continue
+            for tel in telefonos:
+                try:
+                    await set_modo(tel, "ia", "auto_retorno")
+                    logger.info(f"Auto-retorno: {tel} devuelto a IA por inactividad")
+                except Exception as e:
+                    logger.warning(f"Auto-retorno: no se pudo devolver {tel} a IA: {e}")
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.error(f"Auto-retorno: error inesperado en el loop: {e}")
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -40,7 +73,18 @@ async def lifespan(app: FastAPI):
     logger.info("Base de datos inicializada")
     logger.info(f"Servidor AgentKit corriendo en puerto {PORT}")
     logger.info(f"Proveedor de WhatsApp: {proveedor.__class__.__name__}")
+
+    tarea_auto_retorno = None
+    if AUTO_RETORNO_MINUTOS > 0:
+        tarea_auto_retorno = asyncio.create_task(_loop_auto_retorno())
+        logger.info(f"Auto-retorno activo: {AUTO_RETORNO_MINUTOS} min de inactividad")
+    else:
+        logger.info("Auto-retorno desactivado (AUTO_RETORNO_MINUTOS=0)")
+
     yield
+
+    if tarea_auto_retorno is not None:
+        tarea_auto_retorno.cancel()
 
 
 app = FastAPI(
