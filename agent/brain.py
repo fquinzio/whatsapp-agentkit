@@ -233,8 +233,14 @@ async def generar_respuesta(
     if not mensaje or len(mensaje.strip()) < 2:
         return obtener_mensaje_fallback()
 
-    system_prompt = cargar_system_prompt()
-    system_prompt += "\n\n## Fecha y hora actual\n" + obtener_fecha_actual_texto()
+    # ── Parte ESTABLE del system prompt (base + catálogo): idéntica en cada mensaje
+    # y entre todos los clientes, así que se cachea (prompt caching). Las lecturas de
+    # caché cuestan ~10% del precio normal, lo que reduce muchísimo el costo por mensaje.
+    system_estable = cargar_system_prompt()
+
+    # ── Parte VOLÁTIL: cambia por mensaje/cliente (fecha, perfil, contexto). Va DESPUÉS
+    # del punto de caché, sin cachear, para no invalidar la caché del bloque estable.
+    partes_volatiles = ["## Fecha y hora actual\n" + obtener_fecha_actual_texto()]
 
     # Memoria larga: cargar lo que ya sabemos de este cliente
     if telefono:
@@ -246,8 +252,8 @@ async def generar_respuesta(
         if perfil:
             datos = [f"{k}: {v}" for k, v in perfil.items() if v]
             if datos:
-                system_prompt += (
-                    "\n\n## Lo que ya sabes de este cliente\n"
+                partes_volatiles.append(
+                    "## Lo que ya sabes de este cliente\n"
                     "Usa estos datos para personalizar la conversación (salúdalo por su nombre "
                     "si lo tienes, no vuelvas a preguntar lo que ya sabes). Si algo cambió, "
                     "actualízalo con la herramienta actualizar_perfil_cliente:\n- "
@@ -255,14 +261,24 @@ async def generar_respuesta(
                 )
 
     if conversacion_reciente:
-        system_prompt += (
-            "\n\n## Contexto de esta conversación\n"
+        partes_volatiles.append(
+            "## Contexto de esta conversación\n"
             "El cliente ya te escribió hace menos de 12 horas: esta es una conversación "
             "en curso. NO vuelvas a saludar formalmente ni a presentarte de nuevo como si "
             "fuera la primera vez. Responde directo al mensaje, y si quieres reconocer que "
             "sigue la conversación usa algo breve y natural (ej. \"¡Hola de nuevo!\", "
             "\"Dime\", \"Cuéntame\"), nunca la presentación completa de saludo inicial."
         )
+
+    # system como lista de bloques: el estable se cachea (cache_control), el volátil no.
+    system_blocks = [
+        {
+            "type": "text",
+            "text": system_estable,
+            "cache_control": {"type": "ephemeral"},
+        },
+        {"type": "text", "text": "\n\n".join(partes_volatiles)},
+    ]
 
     # Construir mensajes para la API
     mensajes = []
@@ -283,12 +299,17 @@ async def generar_respuesta(
             response = await client.messages.create(
                 model="claude-sonnet-4-6",
                 max_tokens=1024,
-                system=system_prompt,
+                system=system_blocks,
                 messages=mensajes,
                 tools=TOOLS,
             )
 
-            logger.info(f"Respuesta generada ({response.usage.input_tokens} in / {response.usage.output_tokens} out)")
+            u = response.usage
+            logger.info(
+                f"Respuesta generada ({u.input_tokens} in / {u.output_tokens} out / "
+                f"cache_write {getattr(u, 'cache_creation_input_tokens', 0)} / "
+                f"cache_read {getattr(u, 'cache_read_input_tokens', 0)})"
+            )
 
             if response.stop_reason != "tool_use":
                 texto = "".join(bloque.text for bloque in response.content if bloque.type == "text")
