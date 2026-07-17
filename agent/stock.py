@@ -26,6 +26,25 @@ logger = logging.getLogger("agentkit")
 _CACHE_TTL = 600  # 10 minutos
 _cache: dict = {"ts": 0.0, "filas": [], "actualizado": None}
 
+# El sufijo final del SKU codifica la talla (ej. "40342500-000-04" -> 04 -> M)
+TALLAS_POR_SUFIJO = {
+    "02": "XS",
+    "03": "S",
+    "04": "M",
+    "05": "L",
+    "06": "XL",
+    "07": "XXL",
+    "08": "XXXL",
+}
+
+
+def _talla_desde_sku(sku: str) -> str | None:
+    """Deriva la talla desde el último segmento del SKU. None si no corresponde a talla."""
+    partes = (sku or "").split("-")
+    if len(partes) >= 2:
+        return TALLAS_POR_SUFIJO.get(partes[-1])
+    return None
+
 
 def _normalizar(texto: str) -> str:
     """Minúsculas y sin acentos, para comparar de forma robusta."""
@@ -164,17 +183,31 @@ async def consultar_stock(consulta: str) -> dict:
     # Agrupar total y armar detalle (máximo 20 variantes para no saturar)
     total = sum(f["stock"] for f in coincidencias)
     detalle = [
-        {"nombre": f["nombre"], "sku": f["sku"], "stock": f["stock"], "precio": f["precio"]}
+        {
+            "nombre": f["nombre"],
+            "sku": f["sku"],
+            "talla": _talla_desde_sku(f["sku"]),  # None si el producto no maneja tallas
+            "stock": f["stock"],
+            "precio": f["precio"],
+        }
         for f in sorted(coincidencias, key=lambda x: -x["stock"])[:20]
     ]
+
+    # Resumen de tallas disponibles (solo variantes con stock > 0 y talla conocida)
+    tallas_disponibles = sorted(
+        {d["talla"] for d in detalle if d["talla"] and d["stock"] > 0},
+        key=lambda t: list(TALLAS_POR_SUFIJO.values()).index(t),
+    )
 
     return {
         "coincidencias": detalle,
         "unidades_totales": total,
         "hay_stock": total > 0,
+        "tallas_disponibles": tallas_disponibles,
         "actualizado": actualizado,
         "nota": (
-            "Stock referencial actualizado a diario; puede variar. "
-            "Si el cliente pide confirmación exacta de talla, ofrécele confirmar con el equipo."
+            "Stock referencial actualizado a diario; puede variar. La talla viene indicada "
+            "en cada variante (campo 'talla'); si es null el producto no maneja tallas. "
+            "Puedes decirle al cliente qué tallas hay disponibles."
         ),
     }
