@@ -42,6 +42,14 @@ MAX_ITERACIONES_TOOLS = 5
 # Modelo de Claude usado por el agente (se registra también en las métricas)
 MODELO = "claude-sonnet-4-6"
 
+# Modelo para resumir conversaciones largas: es una tarea sencilla, así que usamos
+# Haiku (mucho más barato: ~1/3 del costo de Sonnet) sin pérdida real de calidad.
+MODELO_RESUMEN = os.getenv("MODELO_RESUMEN", "claude-haiku-4-5")
+
+# Máximo de tokens de la respuesta al cliente. Los mensajes de WhatsApp son cortos;
+# 500 acota respuestas largas (la salida cuesta 5× la entrada) sin afectar las normales.
+MAX_TOKENS_RESPUESTA = int(os.getenv("MAX_TOKENS_RESPUESTA", "500"))
+
 # Resumen de conversaciones largas (memoria de largo plazo):
 # - UMBRAL_RESUMEN: desde cuántos mensajes en total se empieza a resumir.
 # - VENTANA_VIVA: cuántos mensajes recientes se dejan fuera del resumen (esos
@@ -284,6 +292,9 @@ async def generar_respuesta(
     # ── Parte ESTABLE del system prompt (base + catálogo): idéntica en cada mensaje
     # y entre todos los clientes, así que se cachea (prompt caching). Las lecturas de
     # caché cuestan ~10% del precio normal, lo que reduce muchísimo el costo por mensaje.
+    # Usamos TTL de 1 hora: como el bloque es idéntico para todos los clientes, con
+    # tráfico moderado la caché queda casi siempre caliente y evitamos re-escribirla
+    # (la escritura cuesta 2× con TTL de 1h, pero se amortiza con solo 3 lecturas).
     system_estable = cargar_system_prompt()
 
     # ── Parte VOLÁTIL: cambia por mensaje/cliente (fecha, perfil, contexto). Va DESPUÉS
@@ -355,7 +366,7 @@ async def generar_respuesta(
         {
             "type": "text",
             "text": system_estable,
-            "cache_control": {"type": "ephemeral"},
+            "cache_control": {"type": "ephemeral", "ttl": "1h"},
         },
         {"type": "text", "text": "\n\n".join(partes_volatiles)},
     ]
@@ -400,7 +411,7 @@ async def generar_respuesta(
         for _ in range(MAX_ITERACIONES_TOOLS):
             response = await client.messages.create(
                 model=MODELO,
-                max_tokens=1024,
+                max_tokens=MAX_TOKENS_RESPUESTA,
                 system=system_blocks,
                 messages=mensajes,
                 tools=TOOLS,
@@ -480,7 +491,7 @@ async def generar_resumen_conversacion(
 
     try:
         resp = await client.messages.create(
-            model=MODELO,
+            model=MODELO_RESUMEN,
             max_tokens=400,
             system=instruccion,
             messages=[{"role": "user", "content": transcripcion[:12000]}],
