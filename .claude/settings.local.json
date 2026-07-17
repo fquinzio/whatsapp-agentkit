@@ -19,7 +19,9 @@
       "Edit",
       "Glob",
       "Grep",
-      "mcp__Google_Drive__read_file_content"
+      "mcp__Google_Drive__read_file_content",
+      "mcp__Shopify__get-shop-info",
+      "mcp__Shopify__search_products"
     ]
   }
 }
