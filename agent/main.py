@@ -13,9 +13,10 @@ from datetime import datetime, timedelta
 from fastapi import FastAPI, Request, HTTPException, Header
 from fastapi.responses import PlainTextResponse
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 from dotenv import load_dotenv
 from agent.brain import generar_respuesta
-from agent.memory import inicializar_db, guardar_mensaje, obtener_historial, obtener_ultimo_timestamp, listar_conversaciones, obtener_historial_completo, get_modo, get_estado
+from agent.memory import inicializar_db, guardar_mensaje, obtener_historial, obtener_ultimo_timestamp, listar_conversaciones, obtener_historial_completo, get_modo, get_estado, set_modo, MARCADOR_HUMANO
 from agent.providers import obtener_proveedor
 from agent.tools import notificar_camila
 
@@ -188,3 +189,84 @@ async def admin_historial_conversacion(telefono: str, x_admin_token: str | None 
     """Historial completo de una conversación para el panel de monitoreo."""
     _verificar_admin_token(x_admin_token)
     return await obtener_historial_completo(telefono)
+
+
+class ResponderBody(BaseModel):
+    mensaje: str
+
+
+class ModoBody(BaseModel):
+    modo: str
+    nota: str | None = None
+
+
+@app.post("/admin/conversaciones/{telefono}/responder")
+async def admin_responder(
+    telefono: str,
+    body: ResponderBody,
+    x_admin_token: str | None = Header(default=None),
+):
+    """
+    Envía un mensaje al cliente como humano (Camila) y toma el control de la
+    conversación automáticamente (modo → humano). Reutiliza la misma función de
+    envío del proveedor que usa el resto del sistema.
+    """
+    _verificar_admin_token(x_admin_token)
+    mensaje = (body.mensaje or "").strip()
+    if not mensaje:
+        raise HTTPException(status_code=400, detail="El mensaje no puede estar vacío")
+
+    # 1) Enviar al cliente. Si falla (ej. ventana de 24h cerrada o error de Meta),
+    #    NO cambiamos el modo ni guardamos nada: el cliente no recibió el mensaje,
+    #    así que devolvemos el error real al panel (nada de 200 silencioso).
+    enviado = await proveedor.enviar_mensaje(telefono, mensaje)
+    if not enviado:
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "No se pudo entregar el mensaje al cliente (posible ventana de 24h "
+                "cerrada o error de Meta). Revisa los logs. El modo no cambió."
+            ),
+        )
+
+    # 2) El humano toma el control con solo escribir (sin paso extra).
+    await set_modo(telefono, "humano", "humano_respondio")
+
+    # 3) Guardar en el historial con marcador interno. El marcador queda SOLO en la
+    #    base de datos (para distinguirlo en el panel); al cliente ya se le envió el
+    #    texto limpio en el paso 1.
+    await guardar_mensaje(telefono, "assistant", MARCADOR_HUMANO + mensaje)
+
+    logger.info(f"Humano respondió a {telefono}; conversación en modo humano")
+    return {"ok": True, "modo": "humano"}
+
+
+@app.post("/admin/conversaciones/{telefono}/modo")
+async def admin_cambiar_modo(
+    telefono: str,
+    body: ModoBody,
+    x_admin_token: str | None = Header(default=None),
+):
+    """Cambia manualmente el modo de una conversación (ia | humano)."""
+    _verificar_admin_token(x_admin_token)
+    modo = (body.modo or "").strip().lower()
+    if modo not in ("ia", "humano"):
+        raise HTTPException(status_code=400, detail="Modo inválido, usa 'ia' o 'humano'")
+
+    await set_modo(telefono, modo, "admin_manual", body.nota)
+
+    # Al devolver la conversación a la IA, avisamos brevemente al cliente que
+    # seguimos por acá. Es cosmético: si el envío falla (ventana de 24h cerrada),
+    # lo ignoramos silenciosamente.
+    if modo == "ia":
+        try:
+            enviado = await proveedor.enviar_mensaje(
+                telefono,
+                "¡Gracias por tu paciencia! Sigo por acá para lo que necesites. 🚴",
+            )
+            if not enviado:
+                logger.info(f"Mensaje de retome a {telefono} no entregado (ignorado)")
+        except Exception as e:
+            logger.info(f"No se pudo enviar mensaje de retome a {telefono} (ignorado): {e}")
+
+    return {"ok": True, "modo": modo}
