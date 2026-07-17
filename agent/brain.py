@@ -11,6 +11,7 @@ import json
 import yaml
 import logging
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from anthropic import AsyncAnthropic
 from dotenv import load_dotenv
 
@@ -183,7 +184,7 @@ def obtener_mensaje_fallback() -> str:
 
 def obtener_fecha_actual_texto() -> str:
     """Texto en español con la fecha/hora actual, para que el modelo calcule fechas relativas."""
-    ahora = datetime.now()
+    ahora = datetime.now(ZoneInfo("America/Santiago"))
     dia_semana = DIAS_ES[ahora.weekday()]
     mes = MESES_ES[ahora.month - 1]
     return (
