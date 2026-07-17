@@ -161,6 +161,18 @@
   .login-card button { width: 100%; padding: 12px; font-size: 15px; }
   .login-error { color: #ff8a8a; font-size: 13px; margin-top: 12px; min-height: 16px; }
 
+  /* ── Ficha del cliente (estadísticas + etiquetas + nota de Camila + resumen) ── */
+  .ficha { background: var(--panel-2); border-bottom: 1px solid var(--border); padding: 12px 16px; font-size: 13px; }
+  .ficha-stats { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 6px; }
+  .ficha-stat { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 4px 9px; color: var(--muted); font-size: 12px; }
+  .ficha-stat b { color: var(--text); font-weight: 600; }
+  .ficha-label { display: block; font-size: 11px; color: var(--muted); margin: 10px 0 4px; }
+  .ficha-input, .ficha-nota { width: 100%; background: var(--panel); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 8px 10px; font-size: 13px; font-family: inherit; }
+  .ficha-nota { height: 58px; resize: vertical; }
+  .ficha-row { margin-top: 10px; display: flex; gap: 8px; align-items: center; }
+  .ficha-resumen { margin-top: 12px; color: var(--muted); font-size: 12px; line-height: 1.45; white-space: pre-wrap; border-top: 1px dashed var(--border); padding-top: 10px; }
+  #btn-ficha { display: none; }
+
   /* ── Responsive: en el celular se ve la lista o el chat, no ambos ── */
   @media (max-width: 720px) {
     header h1 { font-size: 15px; }
@@ -203,6 +215,18 @@
         <span class="tel" id="bar-tel"></span>
         <span class="badge" id="bar-badge"></span>
         <div class="actions" id="actions"></div>
+        <button id="btn-ficha" class="ghost">ℹ️ Ficha</button>
+      </div>
+      <div class="ficha" id="ficha" style="display:none">
+        <div class="ficha-stats" id="ficha-stats"></div>
+        <label class="ficha-label" for="ficha-etiquetas">Etiquetas (separadas por coma)</label>
+        <input id="ficha-etiquetas" class="ficha-input" placeholder="Ej: VIP, mayorista, competidor" />
+        <label class="ficha-label" for="ficha-nota">Nota del equipo (interna — Francisca la usa como contexto, el cliente no la ve)</label>
+        <textarea id="ficha-nota" class="ficha-nota" placeholder="Ej: cliente VIP, prefiere retiro en tienda, ya compró una bici en marzo"></textarea>
+        <div class="ficha-row">
+          <button id="ficha-guardar">Guardar ficha</button>
+        </div>
+        <div class="ficha-resumen" id="ficha-resumen"></div>
       </div>
       <div class="thread" id="thread">
         <div class="empty">Selecciona una conversación.</div>
@@ -324,6 +348,9 @@
     });
     $("bar").style.display = "flex";
     $("composer").style.display = "block";
+    $("btn-ficha").style.display = "inline-flex";
+    $("ficha").style.display = "none"; // colapsada al cambiar de conversación
+    cargarFicha(tel);                  // carga la ficha en segundo plano
     $("bar-tel").textContent = tel;
     $("bar-badge").className = "badge " + (modo === "humano" ? "humano" : "ia");
     $("bar-badge").innerHTML = (modo === "humano" ? "🙋 Humano" : "🤖 IA") + (modoDesde ? " · " + tiempoRelativo(modoDesde) : "");
@@ -410,6 +437,48 @@
     refreshTimer = setInterval(cargarConversaciones, 30000);
   }
 
+  // ── Ficha del cliente ──────────────────────────────────────────
+  async function cargarFicha(tel) {
+    let f;
+    try {
+      f = await api("/admin/conversaciones/" + encodeURIComponent(tel) + "/perfil");
+    } catch (e) {
+      if (e.status === 401 || e.status === 403) { cerrarSesion(true); return; }
+      $("ficha-stats").innerHTML = `<span class="ficha-stat">No se pudo cargar la ficha</span>`;
+      return;
+    }
+    const stats = [];
+    stats.push(`<span class="ficha-stat">${f.es_recurrente ? "🔁 <b>Recurrente</b>" : "🆕 <b>Nuevo</b>"}</span>`);
+    stats.push(`<span class="ficha-stat"><b>${f.total_mensajes_cliente || 0}</b> mensajes del cliente</span>`);
+    if (f.primera_interaccion) stats.push(`<span class="ficha-stat">Desde <b>${f.primera_interaccion.slice(0, 10)}</b></span>`);
+    if (f.ultima_interaccion) stats.push(`<span class="ficha-stat">Última: <b>${tiempoRelativo(f.ultima_interaccion)}</b></span>`);
+    $("ficha-stats").innerHTML = stats.join("");
+    $("ficha-etiquetas").value = f.etiquetas || "";
+    $("ficha-nota").value = f.nota_camila || "";
+    $("ficha-resumen").innerHTML = f.resumen
+      ? "<b>📝 Resumen de conversaciones anteriores</b>\n" + f.resumen.replace(/</g, "&lt;")
+      : "<i>Aún no hay resumen (se genera solo cuando la conversación es larga).</i>";
+  }
+
+  async function guardarFicha() {
+    if (!seleccionada) return;
+    $("ficha-guardar").disabled = true;
+    try {
+      await api("/admin/conversaciones/" + encodeURIComponent(seleccionada) + "/perfil", {
+        method: "POST",
+        body: JSON.stringify({
+          nota_camila: $("ficha-nota").value,
+          etiquetas: $("ficha-etiquetas").value,
+        }),
+      });
+      toast("Ficha guardada. Francisca la usará como contexto.", "ok");
+    } catch (e) {
+      toast("No se pudo guardar la ficha: " + e.message, "err");
+    } finally {
+      $("ficha-guardar").disabled = false;
+    }
+  }
+
   // ── Acceso ─────────────────────────────────────────────────────
   function mostrarLogin(mensaje) {
     $("login").style.display = "flex";
@@ -463,6 +532,12 @@
   $("btn-volver").addEventListener("click", () => {
     document.body.classList.remove("mostrando-chat");
   });
+
+  $("btn-ficha").addEventListener("click", () => {
+    const f = $("ficha");
+    f.style.display = f.style.display === "none" ? "block" : "none";
+  });
+  $("ficha-guardar").addEventListener("click", guardarFicha);
 
   $("enviar").addEventListener("click", responder);
   $("input").addEventListener("keydown", (e) => {

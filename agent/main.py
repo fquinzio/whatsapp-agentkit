@@ -16,8 +16,8 @@ from fastapi.responses import PlainTextResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
-from agent.brain import generar_respuesta
-from agent.memory import inicializar_db, guardar_mensaje, obtener_historial, obtener_ultimo_timestamp, listar_conversaciones, obtener_historial_completo, get_modo, get_estado, set_modo, MARCADOR_HUMANO, conversaciones_para_auto_retorno
+from agent.brain import generar_respuesta, actualizar_resumen_si_corresponde
+from agent.memory import inicializar_db, guardar_mensaje, obtener_historial, obtener_ultimo_timestamp, listar_conversaciones, obtener_historial_completo, get_modo, get_estado, set_modo, MARCADOR_HUMANO, conversaciones_para_auto_retorno, obtener_ficha, guardar_datos_camila
 from agent.providers import obtener_proveedor
 from agent.tools import notificar_camila
 
@@ -201,6 +201,10 @@ async def webhook_handler(request: Request):
 
             logger.info(f"Respuesta a {msg.telefono}: {respuesta}")
 
+            # Si la conversación ya es larga, actualizar el resumen de largo plazo en
+            # background (no bloquea la respuesta al cliente; tolera fallos).
+            asyncio.create_task(actualizar_resumen_si_corresponde(msg.telefono))
+
             # Reenviar copia de la conversación para monitoreo (no bloquea la respuesta
             # al cliente). Si Francisca acaba de escalar, Camila ya recibió el aviso de
             # escalamiento con el motivo, así que evitamos el doble ping.
@@ -242,6 +246,12 @@ class ResponderBody(BaseModel):
 class ModoBody(BaseModel):
     modo: str
     nota: str | None = None
+
+
+class DatosClienteBody(BaseModel):
+    # None = no tocar ese campo; "" = borrarlo
+    nota_camila: str | None = None
+    etiquetas: str | None = None
 
 
 @app.post("/admin/conversaciones/{telefono}/responder")
@@ -314,3 +324,29 @@ async def admin_cambiar_modo(
             logger.info(f"No se pudo enviar mensaje de retome a {telefono} (ignorado): {e}")
 
     return {"ok": True, "modo": modo}
+
+
+@app.get("/admin/conversaciones/{telefono}/perfil")
+async def admin_obtener_perfil(telefono: str, x_admin_token: str | None = Header(default=None)):
+    """
+    Ficha del cliente para el panel: estadísticas (primera/última interacción, total
+    de mensajes, si es recurrente), etiquetas, nota manual de Camila y el resumen de
+    largo plazo. Es la misma información que Francisca usa como contexto.
+    """
+    _verificar_admin_token(x_admin_token)
+    return await obtener_ficha(telefono)
+
+
+@app.post("/admin/conversaciones/{telefono}/perfil")
+async def admin_guardar_perfil(
+    telefono: str,
+    body: DatosClienteBody,
+    x_admin_token: str | None = Header(default=None),
+):
+    """
+    Guarda la nota manual de Camila y/o las etiquetas del cliente desde el panel.
+    Estos datos pasan a formar parte del contexto de Francisca en próximos mensajes.
+    """
+    _verificar_admin_token(x_admin_token)
+    await guardar_datos_camila(telefono, nota_camila=body.nota_camila, etiquetas=body.etiquetas)
+    return await obtener_ficha(telefono)
