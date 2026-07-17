@@ -96,6 +96,27 @@ TOOLS = [
         },
     },
     {
+        "name": "escalar_a_humano",
+        "description": (
+            "Escala la conversación a un humano (Camila) y deja de responder tú. "
+            "Úsala DE VERDAD (no solo digas que conectarás con alguien) cuando: "
+            "(a) el cliente pide explícitamente hablar con una persona, (b) pregunta "
+            "algo que no puedes responder con tu información o es demasiado técnico, o "
+            "(c) detectas un lead de alta intención que requiere atención personalizada. "
+            "Tras llamarla, envía UNA sola despedida breve; luego Camila toma el control."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "motivo": {
+                    "type": "string",
+                    "description": "Motivo del escalamiento: qué necesita el cliente y por qué lo pasas a un humano",
+                },
+            },
+            "required": ["motivo"],
+        },
+    },
+    {
         "name": "actualizar_perfil_cliente",
         "description": (
             "Guarda datos DURABLES que aprendiste del cliente para recordarlos en futuras "
@@ -192,6 +213,11 @@ async def ejecutar_tool(nombre: str, input_data: dict, telefono: str) -> dict:
             )
         elif nombre == "consultar_stock":
             return await stock_module.consultar_stock(input_data.get("consulta", ""))
+        elif nombre == "escalar_a_humano":
+            return await tools_module.escalar_a_humano(
+                telefono=telefono,
+                motivo=input_data.get("motivo", ""),
+            )
         elif nombre == "actualizar_perfil_cliente":
             return await actualizar_perfil(
                 telefono,

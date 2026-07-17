@@ -11,6 +11,8 @@ import yaml
 import logging
 from datetime import datetime
 
+from agent.memory import set_modo
+
 logger = logging.getLogger("agentkit")
 
 HORARIO_SHOWROOM = {
@@ -228,3 +230,47 @@ async def registrar_lead(telefono: str, nombre: str, interes: str, calificacion:
     )
 
     return {"registrado": True, "mensaje": "Lead registrado correctamente, Camila fue notificada."}
+
+
+# ════════════════════════════════════════════════════════════
+# Escalamiento a humano — Francisca deja el control a Camila
+# ════════════════════════════════════════════════════════════
+
+async def escalar_a_humano(telefono: str, motivo: str) -> dict:
+    """
+    Escala la conversación a un humano (Camila):
+      1. Cambia el modo de la conversación a 'humano' (Francisca deja de responder).
+      2. Notifica a Camila con el motivo, reutilizando notificar_camila().
+      3. Devuelve confirmación para que el LLM genere UNA despedida breve. Esa
+         despedida SÍ se envía (es el último mensaje de Francisca antes del silencio).
+
+    Falla con gracia: si no se pudo cambiar el modo, no escala (para no dejar la
+    conversación en un estado a medias) y devuelve el error al modelo.
+
+    Args:
+        telefono: Número del cliente
+        motivo: Por qué se escala (qué necesita el cliente)
+    """
+    try:
+        await set_modo(telefono, "humano", "francisca_escalo", nota=motivo)
+    except Exception as e:
+        logger.error(f"No se pudo escalar {telefono} a humano: {e}")
+        return {"escalado": False, "mensaje": "No se pudo escalar en este momento."}
+
+    await notificar_camila(
+        f"🚨 Francisca escaló una conversación a un humano\n"
+        f"Cliente: {telefono}\n"
+        f"Motivo: {motivo}\n\n"
+        f"Responde desde el panel o directo por WhatsApp: {telefono}"
+    )
+
+    logger.info(f"Conversación {telefono} escalada a humano. Motivo: {motivo}")
+
+    return {
+        "escalado": True,
+        "mensaje": (
+            "Conversación escalada a Camila (ya fue notificada). Ahora despídete con "
+            "UN solo mensaje breve y cálido, diciéndole al cliente que Camila le "
+            "escribirá en breve por este mismo WhatsApp. No agregues nada más."
+        ),
+    }
