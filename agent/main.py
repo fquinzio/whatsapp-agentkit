@@ -102,14 +102,13 @@ async def webhook_handler(request: Request):
 
             logger.info(f"Respuesta a {msg.telefono}: {respuesta}")
 
-                    # Reenviar copia de la conversación para monitoreo (no bloquea la respuesta al cliente)
-                    if msg.telefono != os.getenv("CAMILA_WHATSAPP_NUMBER"):
-                                        await notificar_camila(
-                                                                f"💬 Conversación con {msg.telefono}\n\n"
-                                                                f"Cliente: {msg.texto}\n\n"
-                                                                f"Francisca: {respuesta}"
-                                        )
-
+            # Reenviar copia de la conversación para monitoreo (no bloquea la respuesta al cliente)
+            if msg.telefono != os.getenv("CAMILA_WHATSAPP_NUMBER"):
+                await notificar_camila(
+                    f"💬 Conversación con {msg.telefono}\n\n"
+                    f"Cliente: {msg.texto}\n\n"
+                    f"Francisca: {respuesta}"
+                )
         return {"status": "ok"}
 
     except Exception as e:
