@@ -72,3 +72,40 @@ class ProveedorMeta(ProveedorWhatsApp):
             if r.status_code != 200:
                 logger.error(f"Error Meta API: {r.status_code} — {r.text}")
             return r.status_code == 200
+
+    async def enviar_plantilla(self, telefono: str, plantilla: str, parametros: list[str], idioma: str = "es") -> bool:
+        """
+        Envía un mensaje usando una plantilla aprobada de Meta.
+        Las plantillas no tienen la restricción de la ventana de 24 horas,
+        por lo que sirven como respaldo cuando enviar_mensaje falla.
+        Nota: los parámetros no pueden contener saltos de línea ni tabs.
+        """
+        if not self.access_token or not self.phone_number_id:
+            logger.warning("META_ACCESS_TOKEN o META_PHONE_NUMBER_ID no configurados")
+            return False
+        url = f"https://graph.facebook.com/{self.api_version}/{self.phone_number_id}/messages"
+        headers = {
+            "Authorization": f"Bearer {self.access_token}",
+            "Content-Type": "application/json",
+        }
+        componentes = []
+        if parametros:
+            componentes.append({
+                "type": "body",
+                "parameters": [{"type": "text", "text": p} for p in parametros],
+            })
+        payload = {
+            "messaging_product": "whatsapp",
+            "to": telefono,
+            "type": "template",
+            "template": {
+                "name": plantilla,
+                "language": {"code": idioma},
+                "components": componentes,
+            },
+        }
+        async with httpx.AsyncClient() as client:
+            r = await client.post(url, json=payload, headers=headers)
+            if r.status_code != 200:
+                logger.error(f"Error Meta API (plantilla): {r.status_code} — {r.text}")
+            return r.status_code == 200
