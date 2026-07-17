@@ -19,15 +19,17 @@ class ProveedorMeta(ProveedorWhatsApp):
         self.verify_token = os.getenv("META_VERIFY_TOKEN", "agentkit-verify")
         self.api_version = "v21.0"
 
-    async def validar_webhook(self, request: Request) -> dict | int | None:
+    async def validar_webhook(self, request: Request) -> str | None:
         """Meta requiere verificación GET con hub.verify_token."""
         params = request.query_params
         mode = params.get("hub.mode")
         token = params.get("hub.verify_token")
         challenge = params.get("hub.challenge")
         if mode == "subscribe" and token == self.verify_token:
-            # Meta espera el challenge como respuesta en texto plano
-            return int(challenge)
+            # Meta espera que se devuelva el hub.challenge TAL CUAL, como texto plano.
+            # (main.py lo envuelve en PlainTextResponse). No convertir a int: el challenge
+            # puede no ser numérico y int() crashearía con un 500.
+            return challenge
         return None
 
     async def parsear_webhook(self, request: Request) -> list[MensajeEntrante]:
