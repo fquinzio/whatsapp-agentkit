@@ -10,12 +10,12 @@ import os
 import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request, HTTPException, Header
 from fastapi.responses import PlainTextResponse
+from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
-
 from agent.brain import generar_respuesta
-from agent.memory import inicializar_db, guardar_mensaje, obtener_historial, obtener_ultimo_timestamp
+from agent.memory import inicializar_db, guardar_mensaje, obtener_historial, obtener_ultimo_timestamp, listar_conversaciones, obtener_historial_completo
 from agent.providers import obtener_proveedor
 from agent.tools import notificar_camila
 
@@ -48,7 +48,13 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 @app.get("/")
 async def health_check():
     """Endpoint de salud para Railway/monitoreo."""
@@ -114,3 +120,20 @@ async def webhook_handler(request: Request):
     except Exception as e:
         logger.error(f"Error en webhook: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+ADMIN_TOKEN = os.getenv("ADMIN_TOKEN")
+
+def _verificar_admin_token(x_admin_token: str | None):
+    if not ADMIN_TOKEN or x_admin_token != ADMIN_TOKEN:
+        raise HTTPException(status_code=401, detail="No autorizado")
+@app.get("/admin/conversaciones")
+async def admin_listar_conversaciones(x_admin_token: str | None = Header(default=None)):
+    """Lista de conversaciones para el panel de monitoreo."""
+    _verificar_admin_token(x_admin_token)
+    return await listar_conversaciones()
+
+@app.get("/admin/conversaciones/{telefono}")
+async def admin_historial_conversacion(telefono: str, x_admin_token: str | None = Header(default=None)):
+    """Historial completo de una conversación para el panel de monitoreo."""
+    _verificar_admin_token(x_admin_token)
+    return await obtener_historial_completo(telefono)
