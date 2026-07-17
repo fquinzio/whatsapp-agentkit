@@ -108,6 +108,8 @@ def validar_horario_showroom(fecha: str, hora: str) -> dict:
 async def notificar_camila(mensaje: str) -> bool:
     """
     Envía un WhatsApp a Camila (gerente) avisando de una cita o lead nuevo.
+    Si el envío directo falla (ej. ventana de 24 horas cerrada), reintenta
+    con la plantilla aprobada "aviso_francisca" (sin restricción de ventana).
     Si CAMILA_WHATSAPP_NUMBER no está configurado, solo lo deja en el log.
     """
     numero = os.getenv("CAMILA_WHATSAPP_NUMBER")
@@ -118,8 +120,15 @@ async def notificar_camila(mensaje: str) -> bool:
     from agent.providers import obtener_proveedor
     proveedor = obtener_proveedor()
     enviado = await proveedor.enviar_mensaje(numero, mensaje)
+
+    if not enviado and hasattr(proveedor, "enviar_plantilla"):
+        logger.warning("Envío directo a Camila falló, reintentando con plantilla aviso_francisca")
+        # Los parámetros de plantilla no admiten saltos de línea: aplanar el mensaje
+        texto_plano = " | ".join(l.strip() for l in mensaje.splitlines() if l.strip())
+        enviado = await proveedor.enviar_plantilla(numero, "aviso_francisca", [texto_plano[:900]])
+
     if not enviado:
-        logger.error("No se pudo enviar la notificación de WhatsApp a Camila")
+        logger.error("No se pudo enviar la notificación de WhatsApp a Camila (ni directo ni con plantilla)")
     return enviado
 
 
