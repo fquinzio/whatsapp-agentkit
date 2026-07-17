@@ -1,0 +1,30 @@
+# Configuración del negocio — Generado por AgentKit
+negocio:
+  nombre: "República Ciclismo"
+  descripcion: >
+    Distribuidor oficial en Chile de AGU (ropa técnica de ciclismo, Holanda) y
+    Rudy Project (cascos y anteojos deportivos de alta gama, Italia). Tienda
+    online con showroom en Vitacura, Santiago (solo con cita previa). También
+    comercializa Prologo (sillines y cintas de manubrio), Ravemen (luces),
+    GU Energy (nutrición deportiva) y la línea oficial Team Visma-Lease a Bike.
+    Clientes: ciclistas en Chile, entre 25 y 50 años. Fuertes en ropa técnica
+    de invierno y con un nicho creciente en triatlón gracias a los cascos
+    aero Rudy Project.
+  horario: "WhatsApp: atención 24/7. Showroom (con cita previa): Lunes a Viernes 9:00-19:00, Sábados 10:00-13:00."
+  sitio_web: "https://republicaciclismo.cl"
+  showroom: "Escrivá de Balaguer 9211, Edificio Piamonte, Sala 4, Vitacura, Santiago, Chile"
+  contacto:
+    whatsapp: "+56 9 5525 5067"
+    email: "contacto@republicaciclismo.cl"
+
+agente:
+  nombre: "Francisca"
+  tono: "Amigable y casual"
+  casos_de_uso:
+    - "Responder preguntas frecuentes (catálogo, precios, envíos, cambios, garantías)"
+    - "Agendar citas para visitar el showroom"
+    - "Calificar y atender leads de venta"
+
+metadata:
+  creado: "2026-07-16"
+  version: "1.0"
