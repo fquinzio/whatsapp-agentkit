@@ -37,6 +37,10 @@ class ProveedorMeta(ProveedorWhatsApp):
         for entry in body.get("entry", []):
             for change in entry.get("changes", []):
                 value = change.get("value", {})
+                # Loguear fallos de entrega reportados por Meta (ej. ventana de 24h cerrada)
+                for status in value.get("statuses", []):
+                    if status.get("status") == "failed":
+                        logger.error("Meta: fallo de entrega a " + str(status.get("recipient_id")) + " - " + str(status.get("errors")))
                 for msg in value.get("messages", []):
                     if msg.get("type") == "text":
                         mensajes.append(MensajeEntrante(
