@@ -10,7 +10,7 @@ import os
 from datetime import datetime
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
-from sqlalchemy import String, Text, DateTime, select, Integer
+from sqlalchemy import String, Text, DateTime, select,Integer, func
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -113,3 +113,50 @@ async def limpiar_historial(telefono: str):
         for msg in mensajes:
             await session.delete(msg)
         await session.commit()
+
+
+async def listar_conversaciones() -> list[dict]:
+    """Retorna la lista de conversaciones con teléfono, último mensaje y timestamp."""
+    async with async_session() as session:
+        subq = (
+            select(Mensaje.telefono, func.max(Mensaje.timestamp).label("ultimo_ts"))
+            .group_by(Mensaje.telefono)
+            .subquery()
+        )
+        query = (
+            select(Mensaje)
+            .join(
+                subq,
+                (Mensaje.telefono == subq.c.telefono) & (Mensaje.timestamp == subq.c.ultimo_ts),
+            )
+            .order_by(subq.c.ultimo_ts.desc())
+        )
+        result = await session.execute(query)
+        ultimos = result.scalars().all()
+        return [
+            {
+                "telefono": msg.telefono,
+                "ultimo_mensaje": msg.content,
+                "timestamp": msg.timestamp.isoformat() if msg.timestamp else None,
+            }
+            for msg in ultimos
+        ]
+
+async def obtener_historial_completo(telefono: str) -> list[dict]:
+    """Retorna todo el historial de mensajes de un número, sin límite, para el panel de monitoreo."""
+    async with async_session() as session:
+        query = (
+            select(Mensaje)
+            .where(Mensaje.telefono == telefono)
+            .order_by(Mensaje.timestamp.asc())
+        )
+        result = await session.execute(query)
+        mensajes = result.scalars().all()
+        return [
+            {
+                "role": msg.role,
+                "content": msg.content,
+                "timestamp": msg.timestamp.isoformat() if msg.timestamp else None,
+            }
+            for msg in mensajes
+        ]
