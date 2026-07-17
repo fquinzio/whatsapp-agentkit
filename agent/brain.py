@@ -15,6 +15,8 @@ from anthropic import AsyncAnthropic
 from dotenv import load_dotenv
 
 from agent import tools as tools_module
+from agent import stock as stock_module
+from agent.memory import obtener_perfil, actualizar_perfil
 
 load_dotenv()
 logger = logging.getLogger("agentkit")
@@ -71,6 +73,45 @@ TOOLS = [
                 },
             },
             "required": ["nombre", "interes", "calificacion"],
+        },
+    },
+    {
+        "name": "consultar_stock",
+        "description": (
+            "Consulta la disponibilidad y unidades en stock de un producto (stock real, "
+            "actualizado a diario). Úsala SIEMPRE que el cliente pregunte si hay algo "
+            "disponible, por tallas, o antes de asegurar que un producto está en stock. "
+            "Busca por nombre del producto (o parte) o por SKU. Devuelve las variantes "
+            "que coinciden con sus unidades disponibles."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "consulta": {
+                    "type": "string",
+                    "description": "Nombre del producto o parte de él (ej. 'guantes merino', 'casco egos') o un SKU exacto",
+                },
+            },
+            "required": ["consulta"],
+        },
+    },
+    {
+        "name": "actualizar_perfil_cliente",
+        "description": (
+            "Guarda datos DURABLES que aprendiste del cliente para recordarlos en futuras "
+            "conversaciones (memoria larga). Úsala cuando el cliente comparta algo estable: "
+            "su nombre, disciplina (ruta/gravel/MTB/triatlón), tallas, o intereses claros. "
+            "No la uses para cosas pasajeras. Solo envía los campos que aprendiste."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "nombre": {"type": "string", "description": "Nombre del cliente"},
+                "disciplina": {"type": "string", "description": "Disciplina: ruta, gravel, MTB, triatlón, etc."},
+                "tallas": {"type": "string", "description": "Tallas conocidas (ej. 'polera M, calza L')"},
+                "intereses": {"type": "string", "description": "Productos o categorías que le interesan"},
+                "notas": {"type": "string", "description": "Cualquier otro dato útil y estable del cliente"},
+            },
         },
     },
 ]
@@ -149,6 +190,17 @@ async def ejecutar_tool(nombre: str, input_data: dict, telefono: str) -> dict:
                 interes=input_data.get("interes", ""),
                 calificacion=input_data.get("calificacion", "medio"),
             )
+        elif nombre == "consultar_stock":
+            return await stock_module.consultar_stock(input_data.get("consulta", ""))
+        elif nombre == "actualizar_perfil_cliente":
+            return await actualizar_perfil(
+                telefono,
+                nombre=input_data.get("nombre"),
+                disciplina=input_data.get("disciplina"),
+                tallas=input_data.get("tallas"),
+                intereses=input_data.get("intereses"),
+                notas=input_data.get("notas"),
+            )
         else:
             return {"error": f"Herramienta desconocida: {nombre}"}
     except Exception as e:
@@ -183,6 +235,24 @@ async def generar_respuesta(
 
     system_prompt = cargar_system_prompt()
     system_prompt += "\n\n## Fecha y hora actual\n" + obtener_fecha_actual_texto()
+
+    # Memoria larga: cargar lo que ya sabemos de este cliente
+    if telefono:
+        try:
+            perfil = await obtener_perfil(telefono)
+        except Exception as e:
+            logger.error(f"Error al cargar perfil de {telefono}: {e}")
+            perfil = None
+        if perfil:
+            datos = [f"{k}: {v}" for k, v in perfil.items() if v]
+            if datos:
+                system_prompt += (
+                    "\n\n## Lo que ya sabes de este cliente\n"
+                    "Usa estos datos para personalizar la conversación (salúdalo por su nombre "
+                    "si lo tienes, no vuelvas a preguntar lo que ya sabes). Si algo cambió, "
+                    "actualízalo con la herramienta actualizar_perfil_cliente:\n- "
+                    + "\n- ".join(datos)
+                )
 
     if conversacion_reciente:
         system_prompt += (
