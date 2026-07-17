@@ -15,7 +15,7 @@ from fastapi.responses import PlainTextResponse
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 from agent.brain import generar_respuesta
-from agent.memory import inicializar_db, guardar_mensaje, obtener_historial, obtener_ultimo_timestamp, listar_conversaciones, obtener_historial_completo
+from agent.memory import inicializar_db, guardar_mensaje, obtener_historial, obtener_ultimo_timestamp, listar_conversaciones, obtener_historial_completo, get_modo, get_estado
 from agent.providers import obtener_proveedor
 from agent.tools import notificar_camila
 
@@ -70,6 +70,21 @@ async def webhook_verificacion(request: Request):
     return {"status": "ok"}
 
 
+async def _avisar_mensaje_en_modo_humano(telefono: str, texto: str):
+    """
+    Cuando una conversación está en modo humano, Francisca no responde, pero
+    Camila igual debe enterarse del mensaje entrante para contestarlo desde el
+    panel. Reenvía el mensaje del cliente (sin respuesta de la IA).
+    """
+    if telefono == os.getenv("CAMILA_WHATSAPP_NUMBER"):
+        return
+    await notificar_camila(
+        f"🙋 Mensaje de {telefono} (modo humano — Francisca en silencio)\n\n"
+        f"Cliente: {texto}\n\n"
+        f"Respóndele desde el panel."
+    )
+
+
 @app.post("/webhook")
 async def webhook_handler(request: Request):
     """
@@ -87,6 +102,22 @@ async def webhook_handler(request: Request):
 
             logger.info(f"Mensaje de {msg.telefono}: {msg.texto}")
 
+            # ── Check 1 (antes del LLM): si un humano tomó el control, Francisca
+            # se queda en silencio. Igual guardamos el mensaje y avisamos a Camila.
+            # Falla "abierto" hacia IA: ante cualquier error consultando el modo,
+            # respondemos como siempre para nunca dejar al cliente sin respuesta.
+            try:
+                modo_actual = await get_modo(msg.telefono)
+            except Exception as e:
+                logger.warning(f"No se pudo leer el modo de {msg.telefono}, asumo IA: {e}")
+                modo_actual = "ia"
+
+            if modo_actual == "humano":
+                await guardar_mensaje(msg.telefono, "user", msg.texto)
+                logger.info(f"Modo humano activo para {msg.telefono}: Francisca en silencio")
+                await _avisar_mensaje_en_modo_humano(msg.telefono, msg.texto)
+                continue
+
             # Obtener historial ANTES de guardar el mensaje actual
             # (brain.py agrega el mensaje actual, evitando duplicados)
             historial = await obtener_historial(msg.telefono)
@@ -99,6 +130,23 @@ async def webhook_handler(request: Request):
             # Generar respuesta con Claude
             respuesta = await generar_respuesta(msg.texto, historial, conversacion_reciente, msg.telefono)
 
+            # ── Check 2 (anti-carrera): volver a consultar el modo justo antes de
+            # enviar. Si un HUMANO intervino mientras el LLM generaba, descartamos
+            # la respuesta para no responder dos veces. OJO: si el cambio a 'humano'
+            # lo provocó la propia Francisca al escalar (francisca_escalo), NO se
+            # descarta — esa respuesta es su despedida y sí debe enviarse.
+            try:
+                estado_post = await get_estado(msg.telefono)
+            except Exception as e:
+                logger.warning(f"No se pudo re-leer el modo de {msg.telefono}, asumo IA: {e}")
+                estado_post = {"modo": "ia", "cambiado_por": None}
+
+            if estado_post["modo"] == "humano" and estado_post.get("cambiado_por") != "francisca_escalo":
+                await guardar_mensaje(msg.telefono, "user", msg.texto)
+                logger.info(f"Respuesta descartada por intervención humana para {msg.telefono}")
+                await _avisar_mensaje_en_modo_humano(msg.telefono, msg.texto)
+                continue
+
             # Guardar mensaje del usuario Y respuesta del agente en memoria
             await guardar_mensaje(msg.telefono, "user", msg.texto)
             await guardar_mensaje(msg.telefono, "assistant", respuesta)
@@ -108,8 +156,11 @@ async def webhook_handler(request: Request):
 
             logger.info(f"Respuesta a {msg.telefono}: {respuesta}")
 
-            # Reenviar copia de la conversación para monitoreo (no bloquea la respuesta al cliente)
-            if msg.telefono != os.getenv("CAMILA_WHATSAPP_NUMBER"):
+            # Reenviar copia de la conversación para monitoreo (no bloquea la respuesta
+            # al cliente). Si Francisca acaba de escalar, Camila ya recibió el aviso de
+            # escalamiento con el motivo, así que evitamos el doble ping.
+            escalo_este_turno = estado_post["modo"] == "humano" and estado_post.get("cambiado_por") == "francisca_escalo"
+            if msg.telefono != os.getenv("CAMILA_WHATSAPP_NUMBER") and not escalo_este_turno:
                 await notificar_camila(
                     f"💬 Conversación con {msg.telefono}\n\n"
                     f"Cliente: {msg.texto}\n\n"
