@@ -37,16 +37,6 @@
   }
   header h1 { font-size: 16px; margin: 0; font-weight: 600; }
   header .config { margin-left: auto; display: flex; gap: 8px; align-items: center; }
-  header input {
-    background: var(--panel-2);
-    border: 1px solid var(--border);
-    color: var(--text);
-    padding: 6px 10px;
-    border-radius: 6px;
-    font-size: 12px;
-  }
-  header input#url { width: 260px; }
-  header input#token { width: 160px; }
   button {
     background: var(--accent);
     color: #fff;
@@ -95,6 +85,7 @@
   }
   .main .bar .tel { font-weight: 600; }
   .main .bar .actions { margin-left: auto; display: flex; gap: 8px; }
+  #btn-volver { display: none; padding: 6px 10px; }
   .thread { flex: 1; overflow-y: auto; padding: 18px; display: flex; flex-direction: column; gap: 10px; }
   .msg { max-width: 72%; padding: 9px 13px; border-radius: 12px; font-size: 14px; line-height: 1.35; white-space: pre-wrap; word-wrap: break-word; }
   .msg .who { font-size: 11px; opacity: .7; margin-bottom: 3px; }
@@ -133,27 +124,109 @@
   }
   .toast.ok { background: var(--ok); }
   .toast.err { background: var(--err); }
+
+  /* ── Pantalla de acceso (se pide la clave una sola vez por dispositivo) ── */
+  .login {
+    position: fixed;
+    inset: 0;
+    z-index: 100;
+    background: var(--bg);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+  }
+  .login-card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 32px 26px;
+    width: 100%;
+    max-width: 360px;
+    text-align: center;
+  }
+  .login-logo { font-size: 44px; margin-bottom: 6px; }
+  .login-card h2 { margin: 0 0 4px; font-size: 20px; }
+  .login-card p { margin: 0 0 22px; color: var(--muted); font-size: 13px; }
+  .login-card input {
+    width: 100%;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 12px 14px;
+    border-radius: 8px;
+    font-size: 15px;
+    margin-bottom: 12px;
+  }
+  .login-card button { width: 100%; padding: 12px; font-size: 15px; }
+  .login-error { color: #ff8a8a; font-size: 13px; margin-top: 12px; min-height: 16px; }
+
+  /* ── Ficha del cliente (estadísticas + etiquetas + nota de Camila + resumen) ── */
+  .ficha { background: var(--panel-2); border-bottom: 1px solid var(--border); padding: 12px 16px; font-size: 13px; }
+  .ficha-stats { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 6px; }
+  .ficha-stat { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 4px 9px; color: var(--muted); font-size: 12px; }
+  .ficha-stat b { color: var(--text); font-weight: 600; }
+  .ficha-label { display: block; font-size: 11px; color: var(--muted); margin: 10px 0 4px; }
+  .ficha-input, .ficha-nota { width: 100%; background: var(--panel); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 8px 10px; font-size: 13px; font-family: inherit; }
+  .ficha-nota { height: 58px; resize: vertical; }
+  .ficha-row { margin-top: 10px; display: flex; gap: 8px; align-items: center; }
+  .ficha-resumen { margin-top: 12px; color: var(--muted); font-size: 12px; line-height: 1.45; white-space: pre-wrap; border-top: 1px dashed var(--border); padding-top: 10px; }
+  #btn-ficha { display: none; }
+
+  /* ── Responsive: en el celular se ve la lista o el chat, no ambos ── */
+  @media (max-width: 720px) {
+    header h1 { font-size: 15px; }
+    .sidebar { width: 100%; border-right: none; }
+    .main { display: none; }
+    body.mostrando-chat .sidebar { display: none; }
+    body.mostrando-chat .main { display: flex; }
+    #btn-volver { display: inline-flex; }
+    .msg { max-width: 85%; }
+  }
 </style>
 </head>
 <body>
+  <!-- Pantalla de acceso: aparece solo si el dispositivo aún no tiene guardada la clave -->
+  <div class="login" id="login" style="display:none">
+    <div class="login-card">
+      <div class="login-logo">🚴</div>
+      <h2>Panel de conversaciones</h2>
+      <p>República Ciclismo</p>
+      <input id="login-input" type="password" placeholder="Clave de acceso" autocomplete="current-password" />
+      <button id="login-btn">Entrar</button>
+      <div class="login-error" id="login-error"></div>
+    </div>
+  </div>
+
   <header>
     <h1>🚴 Conversaciones — Francisca</h1>
     <div class="config">
-      <input id="url" placeholder="https://tu-app.up.railway.app" />
-      <input id="token" type="password" placeholder="ADMIN_TOKEN" />
-      <button id="guardar" class="ghost">Guardar</button>
+      <button id="salir" class="ghost">Salir</button>
     </div>
   </header>
 
   <div class="layout">
     <aside class="sidebar" id="sidebar">
-      <div class="empty">Configura la URL y el token, luego Guardar.</div>
+      <div class="empty">Cargando conversaciones…</div>
     </aside>
     <section class="main">
       <div class="bar" id="bar" style="display:none">
+        <button id="btn-volver" class="ghost">←</button>
         <span class="tel" id="bar-tel"></span>
         <span class="badge" id="bar-badge"></span>
         <div class="actions" id="actions"></div>
+        <button id="btn-ficha" class="ghost">ℹ️ Ficha</button>
+      </div>
+      <div class="ficha" id="ficha" style="display:none">
+        <div class="ficha-stats" id="ficha-stats"></div>
+        <label class="ficha-label" for="ficha-etiquetas">Etiquetas (separadas por coma)</label>
+        <input id="ficha-etiquetas" class="ficha-input" placeholder="Ej: VIP, mayorista, competidor" />
+        <label class="ficha-label" for="ficha-nota">Nota del equipo (interna — Francisca la usa como contexto, el cliente no la ve)</label>
+        <textarea id="ficha-nota" class="ficha-nota" placeholder="Ej: cliente VIP, prefiere retiro en tienda, ya compró una bici en marzo"></textarea>
+        <div class="ficha-row">
+          <button id="ficha-guardar">Guardar ficha</button>
+        </div>
+        <div class="ficha-resumen" id="ficha-resumen"></div>
       </div>
       <div class="thread" id="thread">
         <div class="empty">Selecciona una conversación.</div>
@@ -171,14 +244,23 @@
   <div class="toast" id="toast"></div>
 
 <script>
+  // ─────────────────────────────────────────────────────────────
+  // Configuración fija del backend.
+  // La URL NO es secreta, por eso queda escrita aquí y nadie la tiene
+  // que escribir. Si algún día cambias de servidor en Railway, actualiza
+  // solo esta línea.
+  // ─────────────────────────────────────────────────────────────
+  const API_URL = "https://whatsapp-agentkit-production-246b.up.railway.app";
+
   const MARCADOR_HUMANO = "[HUMANO] ";
   let seleccionada = null;
   let refreshTimer = null;
 
   const $ = (id) => document.getElementById(id);
 
-  function baseUrl() { return ($("url").value || "").trim().replace(/\/+$/, ""); }
-  function token() { return ($("token").value || "").trim(); }
+  // La URL viene fija; la clave (token) se guarda una sola vez por dispositivo.
+  function baseUrl() { return API_URL.replace(/\/+$/, ""); }
+  function token() { return (localStorage.getItem("panel_token") || "").trim(); }
 
   function toast(msg, tipo) {
     const t = $("toast");
@@ -201,7 +283,9 @@
     try { data = await resp.json(); } catch (e) { /* puede no venir JSON */ }
     if (!resp.ok) {
       const detalle = (data && (data.detail || data.error)) || ("Error " + resp.status);
-      throw new Error(typeof detalle === "string" ? detalle : JSON.stringify(detalle));
+      const err = new Error(typeof detalle === "string" ? detalle : JSON.stringify(detalle));
+      err.status = resp.status;  // guardamos el status para distinguir "clave mala" de "servidor caído"
+      throw err;
     }
     return data;
   }
@@ -227,11 +311,13 @@
   }
 
   async function cargarConversaciones() {
-    if (!baseUrl() || !token()) return;
+    if (!token()) return;
     let convs;
     try {
       convs = await api("/admin/conversaciones");
     } catch (e) {
+      // Si la clave dejó de ser válida, volvemos a pedir acceso.
+      if (e.status === 401 || e.status === 403) { cerrarSesion(true); return; }
       $("sidebar").innerHTML = `<div class="empty">${e.message}</div>`;
       return;
     }
@@ -256,14 +342,16 @@
 
   async function abrirConversacion(tel, modo, modoDesde) {
     seleccionada = tel;
+    document.body.classList.add("mostrando-chat"); // en el celular pasa a pantalla de chat
     document.querySelectorAll(".conv").forEach((el) => {
       el.classList.toggle("active", el.dataset.tel === tel);
     });
     $("bar").style.display = "flex";
     $("composer").style.display = "block";
+    $("btn-ficha").style.display = "inline-flex";
+    $("ficha").style.display = "none"; // colapsada al cambiar de conversación
+    cargarFicha(tel);                  // carga la ficha en segundo plano
     $("bar-tel").textContent = tel;
-    $("bar-badge").outerHTML = `<span class="badge" id="bar-badge"></span>`;
-    $("bar-badge").innerHTML = "";
     $("bar-badge").className = "badge " + (modo === "humano" ? "humano" : "ia");
     $("bar-badge").innerHTML = (modo === "humano" ? "🙋 Humano" : "🤖 IA") + (modoDesde ? " · " + tiempoRelativo(modoDesde) : "");
 
@@ -273,6 +361,7 @@
     try {
       historial = await api("/admin/conversaciones/" + encodeURIComponent(tel));
     } catch (e) {
+      if (e.status === 401 || e.status === 403) { cerrarSesion(true); return; }
       $("thread").innerHTML = `<div class="empty">${e.message}</div>`;
       return;
     }
@@ -348,25 +437,122 @@
     refreshTimer = setInterval(cargarConversaciones, 30000);
   }
 
-  $("guardar").addEventListener("click", () => {
-    localStorage.setItem("panel_url", baseUrl());
-    localStorage.setItem("panel_token", token());
-    cargarConversaciones();
-    iniciarAutoRefresh();
-    toast("Configuración guardada.", "ok");
+  // ── Ficha del cliente ──────────────────────────────────────────
+  async function cargarFicha(tel) {
+    let f;
+    try {
+      f = await api("/admin/conversaciones/" + encodeURIComponent(tel) + "/perfil");
+    } catch (e) {
+      if (e.status === 401 || e.status === 403) { cerrarSesion(true); return; }
+      $("ficha-stats").innerHTML = `<span class="ficha-stat">No se pudo cargar la ficha</span>`;
+      return;
+    }
+    const stats = [];
+    stats.push(`<span class="ficha-stat">${f.es_recurrente ? "🔁 <b>Recurrente</b>" : "🆕 <b>Nuevo</b>"}</span>`);
+    stats.push(`<span class="ficha-stat"><b>${f.total_mensajes_cliente || 0}</b> mensajes del cliente</span>`);
+    if (f.primera_interaccion) stats.push(`<span class="ficha-stat">Desde <b>${f.primera_interaccion.slice(0, 10)}</b></span>`);
+    if (f.ultima_interaccion) stats.push(`<span class="ficha-stat">Última: <b>${tiempoRelativo(f.ultima_interaccion)}</b></span>`);
+    $("ficha-stats").innerHTML = stats.join("");
+    $("ficha-etiquetas").value = f.etiquetas || "";
+    $("ficha-nota").value = f.nota_camila || "";
+    $("ficha-resumen").innerHTML = f.resumen
+      ? "<b>📝 Resumen de conversaciones anteriores</b>\n" + f.resumen.replace(/</g, "&lt;")
+      : "<i>Aún no hay resumen (se genera solo cuando la conversación es larga).</i>";
+  }
+
+  async function guardarFicha() {
+    if (!seleccionada) return;
+    $("ficha-guardar").disabled = true;
+    try {
+      await api("/admin/conversaciones/" + encodeURIComponent(seleccionada) + "/perfil", {
+        method: "POST",
+        body: JSON.stringify({
+          nota_camila: $("ficha-nota").value,
+          etiquetas: $("ficha-etiquetas").value,
+        }),
+      });
+      toast("Ficha guardada. Francisca la usará como contexto.", "ok");
+    } catch (e) {
+      toast("No se pudo guardar la ficha: " + e.message, "err");
+    } finally {
+      $("ficha-guardar").disabled = false;
+    }
+  }
+
+  // ── Acceso ─────────────────────────────────────────────────────
+  function mostrarLogin(mensaje) {
+    $("login").style.display = "flex";
+    $("login-error").textContent = mensaje || "";
+    $("login-input").value = "";
+    $("login-input").focus();
+  }
+
+  function ocultarLogin() {
+    $("login").style.display = "none";
+  }
+
+  // Borra la clave del dispositivo y vuelve a pedir acceso.
+  // conError=true cuando la clave guardada ya no sirve.
+  function cerrarSesion(conError) {
+    localStorage.removeItem("panel_token");
+    if (refreshTimer) clearInterval(refreshTimer);
+    seleccionada = null;
+    document.body.classList.remove("mostrando-chat");
+    mostrarLogin(conError ? "Tu acceso expiró o la clave cambió. Ingrésala de nuevo." : "");
+  }
+
+  async function intentarLogin() {
+    const val = ($("login-input").value || "").trim();
+    if (!val) { $("login-error").textContent = "Escribe la clave de acceso."; return; }
+    localStorage.setItem("panel_token", val);
+    $("login-error").textContent = "Verificando…";
+    $("login-btn").disabled = true;
+    try {
+      await api("/admin/conversaciones"); // valida la clave contra el backend
+      ocultarLogin();
+      cargarConversaciones();
+      iniciarAutoRefresh();
+    } catch (e) {
+      localStorage.removeItem("panel_token");
+      $("login-error").textContent = (e.status === 401 || e.status === 403)
+        ? "Clave incorrecta. Intenta de nuevo."
+        : "No se pudo conectar con el servidor. Revisa tu internet.";
+    } finally {
+      $("login-btn").disabled = false;
+    }
+  }
+
+  // ── Eventos ────────────────────────────────────────────────────
+  $("login-btn").addEventListener("click", intentarLogin);
+  $("login-input").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); intentarLogin(); }
   });
+
+  $("salir").addEventListener("click", () => cerrarSesion(false));
+  $("btn-volver").addEventListener("click", () => {
+    document.body.classList.remove("mostrando-chat");
+  });
+
+  $("btn-ficha").addEventListener("click", () => {
+    const f = $("ficha");
+    f.style.display = f.style.display === "none" ? "block" : "none";
+  });
+  $("ficha-guardar").addEventListener("click", guardarFicha);
 
   $("enviar").addEventListener("click", responder);
   $("input").addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); responder(); }
   });
 
-  // Restaurar config guardada
-  $("url").value = localStorage.getItem("panel_url") || "";
-  $("token").value = localStorage.getItem("panel_token") || "";
-  if (baseUrl() && token()) {
+  // ── Arranque ───────────────────────────────────────────────────
+  // Si el dispositivo ya tiene la clave guardada, entra directo.
+  // Si no, muestra la pantalla de acceso (se pide una sola vez).
+  if (token()) {
+    ocultarLogin();
     cargarConversaciones();
     iniciarAutoRefresh();
+  } else {
+    mostrarLogin();
   }
 </script>
 </body>

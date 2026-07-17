@@ -7,13 +7,16 @@ por número de teléfono usando SQLite (local) o PostgreSQL (producción).
 """
 
 import os
+import logging
 from datetime import datetime, timedelta
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
-from sqlalchemy import String, Text, DateTime, select,Integer, func, Boolean
+from sqlalchemy import String, Text, DateTime, select,Integer, func, Boolean, text
 from dotenv import load_dotenv
 
 load_dotenv()
+
+logger = logging.getLogger("agentkit")
 
 # Marcador interno para mensajes escritos por un humano (Camila) desde el panel.
 # Se guarda SOLO en la base de datos, como prefijo del contenido, para poder
@@ -64,6 +67,11 @@ class PerfilCliente(Base):
     tallas: Mapped[str | None] = mapped_column(String(120), nullable=True)      # ej. "polera M, calza L"
     intereses: Mapped[str | None] = mapped_column(Text, nullable=True)          # productos/categorías de interés
     notas: Mapped[str | None] = mapped_column(Text, nullable=True)              # cualquier dato útil adicional
+    # ── Campos nuevos (memoria ampliada) ──────────────────────────────
+    etiquetas: Mapped[str | None] = mapped_column(String(255), nullable=True)   # ej. "VIP, mayorista" (editable en el panel)
+    nota_camila: Mapped[str | None] = mapped_column(Text, nullable=True)        # nota manual del equipo (Camila) sobre el cliente
+    resumen: Mapped[str | None] = mapped_column(Text, nullable=True)            # resumen de conversaciones largas (memoria de largo plazo)
+    resumen_hasta_id: Mapped[int | None] = mapped_column(Integer, nullable=True)  # id del último mensaje ya incluido en el resumen
     actualizado: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
@@ -108,10 +116,37 @@ class MetricaIA(Base):
     timestamp: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+async def _migrar_columnas_perfil():
+    """
+    Agrega a `perfiles_cliente` las columnas nuevas si faltan (idempotente).
+
+    Es necesario porque `create_all` crea tablas que no existen, pero NO altera
+    tablas ya creadas para agregarles columnas. En una base PostgreSQL que ya tenía
+    la tabla, estas ALTER agregan las columnas sin perder datos. Cada sentencia va en
+    su propia transacción para que un fallo aislado no afecte a las demás. En una base
+    nueva, la tabla ya nace con todas las columnas y estas ALTER son inofensivas.
+    """
+    columnas = [
+        "ALTER TABLE perfiles_cliente ADD COLUMN IF NOT EXISTS etiquetas VARCHAR(255)",
+        "ALTER TABLE perfiles_cliente ADD COLUMN IF NOT EXISTS nota_camila TEXT",
+        "ALTER TABLE perfiles_cliente ADD COLUMN IF NOT EXISTS resumen TEXT",
+        "ALTER TABLE perfiles_cliente ADD COLUMN IF NOT EXISTS resumen_hasta_id INTEGER",
+    ]
+    for stmt in columnas:
+        try:
+            async with engine.begin() as conn:
+                await conn.execute(text(stmt))
+        except Exception as e:
+            # SQLite (dev) no soporta "ADD COLUMN IF NOT EXISTS": en ese caso la tabla
+            # ya nació con las columnas vía create_all, así que ignoramos el error.
+            logger.debug(f"Migración de columna omitida ({stmt}): {e}")
+
+
 async def inicializar_db():
-    """Crea las tablas si no existen."""
+    """Crea las tablas si no existen y aplica migraciones de columnas."""
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    await _migrar_columnas_perfil()
 
 
 async def guardar_mensaje(telefono: str, role: str, content: str):
@@ -264,6 +299,137 @@ async def actualizar_perfil(telefono: str, **campos) -> dict:
         perfil.actualizado = datetime.utcnow()
         await session.commit()
     return {"guardado": True}
+
+
+# ════════════════════════════════════════════════════════════
+# Ficha del cliente (estadísticas + datos editables por Camila)
+# ════════════════════════════════════════════════════════════
+
+async def obtener_ficha(telefono: str) -> dict:
+    """
+    Retorna la ficha del cliente: estadísticas calculadas desde el historial
+    (primera y última interacción, total de mensajes, si es recurrente) más los
+    datos editables por Camila (etiquetas, nota manual) y el resumen de largo plazo.
+
+    Las estadísticas se CALCULAN al vuelo desde la tabla de mensajes: no se guardan
+    duplicadas, así nunca quedan desincronizadas.
+    """
+    async with async_session() as session:
+        fila = (await session.execute(
+            select(
+                func.min(Mensaje.timestamp),
+                func.max(Mensaje.timestamp),
+                func.count(Mensaje.id),
+            ).where(Mensaje.telefono == telefono)
+        )).one()
+        primera, ultima, total = fila
+
+        total_cliente = (await session.execute(
+            select(func.count(Mensaje.id)).where(
+                (Mensaje.telefono == telefono) & (Mensaje.role == "user")
+            )
+        )).scalar() or 0
+
+        perfil = await session.get(PerfilCliente, telefono)
+
+    # Recurrente = volvió a escribir en un día distinto al primero (más de 24h de diferencia)
+    es_recurrente = bool(primera and ultima and (ultima - primera) > timedelta(hours=24))
+
+    return {
+        "primera_interaccion": primera.isoformat() if primera else None,
+        "ultima_interaccion": ultima.isoformat() if ultima else None,
+        "total_mensajes": total or 0,
+        "total_mensajes_cliente": total_cliente,
+        "es_recurrente": es_recurrente,
+        "etiquetas": perfil.etiquetas if perfil else None,
+        "nota_camila": perfil.nota_camila if perfil else None,
+        "resumen": perfil.resumen if perfil else None,
+    }
+
+
+async def guardar_datos_camila(
+    telefono: str,
+    nota_camila: str | None = None,
+    etiquetas: str | None = None,
+) -> dict:
+    """
+    Guarda la nota manual de Camila y/o las etiquetas del cliente (desde el panel).
+    Un campo en None se deja intacto; una cadena vacía lo borra (queda NULL).
+    """
+    async with async_session() as session:
+        perfil = await session.get(PerfilCliente, telefono)
+        if perfil is None:
+            perfil = PerfilCliente(telefono=telefono)
+            session.add(perfil)
+        if nota_camila is not None:
+            perfil.nota_camila = nota_camila.strip() or None
+        if etiquetas is not None:
+            perfil.etiquetas = etiquetas.strip() or None
+        perfil.actualizado = datetime.utcnow()
+        await session.commit()
+    return {"guardado": True}
+
+
+# ════════════════════════════════════════════════════════════
+# Resumen de conversaciones largas (memoria de largo plazo)
+# ════════════════════════════════════════════════════════════
+
+async def contar_mensajes(telefono: str) -> int:
+    """Cuenta cuántos mensajes hay en total en una conversación."""
+    async with async_session() as session:
+        return (await session.execute(
+            select(func.count(Mensaje.id)).where(Mensaje.telefono == telefono)
+        )).scalar() or 0
+
+
+async def obtener_resumen_meta(telefono: str) -> dict:
+    """Retorna el resumen actual y hasta qué id de mensaje ya fue resumido."""
+    async with async_session() as session:
+        perfil = await session.get(PerfilCliente, telefono)
+        if perfil is None:
+            return {"resumen": None, "resumen_hasta_id": 0}
+        return {"resumen": perfil.resumen, "resumen_hasta_id": perfil.resumen_hasta_id or 0}
+
+
+async def mensajes_para_resumen(
+    telefono: str, dejar_recientes: int, desde_id: int = 0
+) -> tuple[list[dict], int]:
+    """
+    Devuelve los mensajes que faltan por resumir y el id del más nuevo incluido.
+
+    Excluye los `dejar_recientes` mensajes más nuevos (esos siguen yendo verbatim en
+    el historial en vivo) y solo incluye los que aún no se resumieron (id > desde_id).
+    Retorna ([], desde_id) si no hay nada nuevo que resumir.
+    """
+    async with async_session() as session:
+        result = await session.execute(
+            select(Mensaje)
+            .where(Mensaje.telefono == telefono)
+            .order_by(Mensaje.timestamp.asc(), Mensaje.id.asc())
+        )
+        mensajes = result.scalars().all()
+
+    if len(mensajes) <= dejar_recientes:
+        return [], desde_id
+    candidatos = mensajes[:-dejar_recientes]
+    hasta_id = candidatos[-1].id
+    nuevos = [m for m in candidatos if (m.id or 0) > desde_id]
+    if not nuevos:
+        return [], desde_id
+    return [{"role": m.role, "content": m.content} for m in nuevos], hasta_id
+
+
+async def guardar_resumen(telefono: str, resumen: str, hasta_id: int) -> None:
+    """Guarda/actualiza el resumen de largo plazo de un cliente."""
+    async with async_session() as session:
+        perfil = await session.get(PerfilCliente, telefono)
+        if perfil is None:
+            perfil = PerfilCliente(telefono=telefono)
+            session.add(perfil)
+        perfil.resumen = resumen
+        perfil.resumen_hasta_id = hasta_id
+        perfil.actualizado = datetime.utcnow()
+        await session.commit()
 
 
 async def obtener_historial_completo(telefono: str) -> list[dict]:

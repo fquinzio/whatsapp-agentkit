@@ -18,7 +18,17 @@ from dotenv import load_dotenv
 
 from agent import tools as tools_module
 from agent import stock as stock_module
-from agent.memory import obtener_perfil, actualizar_perfil, registrar_metrica
+from agent.memory import (
+    obtener_perfil,
+    actualizar_perfil,
+    registrar_metrica,
+    obtener_ficha,
+    contar_mensajes,
+    obtener_resumen_meta,
+    mensajes_para_resumen,
+    guardar_resumen,
+    MARCADOR_HUMANO,
+)
 
 load_dotenv()
 logger = logging.getLogger("agentkit")
@@ -31,6 +41,13 @@ MAX_ITERACIONES_TOOLS = 5
 
 # Modelo de Claude usado por el agente (se registra también en las métricas)
 MODELO = "claude-sonnet-4-6"
+
+# Resumen de conversaciones largas (memoria de largo plazo):
+# - UMBRAL_RESUMEN: desde cuántos mensajes en total se empieza a resumir.
+# - VENTANA_VIVA: cuántos mensajes recientes se dejan fuera del resumen (esos
+#   siguen yendo textuales en el historial que ve Francisca).
+UMBRAL_RESUMEN = int(os.getenv("UMBRAL_RESUMEN", "25"))
+VENTANA_VIVA = int(os.getenv("VENTANA_VIVA_RESUMEN", "15"))
 
 DIAS_ES = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
 MESES_ES = [
@@ -291,6 +308,38 @@ async def generar_respuesta(
                     + "\n- ".join(datos)
                 )
 
+        # Ficha (estadísticas + etiquetas + nota de Camila) y resumen de largo plazo.
+        # Le dan a Francisca contexto que va más allá de los últimos mensajes.
+        try:
+            ficha = await obtener_ficha(telefono)
+        except Exception as e:
+            logger.error(f"Error al cargar ficha de {telefono}: {e}")
+            ficha = None
+        if ficha:
+            if ficha.get("resumen"):
+                partes_volatiles.append(
+                    "## Resumen de conversaciones anteriores\n"
+                    "Contexto de lo que ya conversaron antes (no lo repitas textualmente, "
+                    "úsalo para no perder el hilo):\n" + ficha["resumen"]
+                )
+            señales = []
+            if ficha.get("es_recurrente"):
+                primera = (ficha.get("primera_interaccion") or "")[:10]
+                señales.append(
+                    f"Es un cliente recurrente: te ha escrito {ficha.get('total_mensajes_cliente', 0)} "
+                    f"mensajes" + (f" desde el {primera}" if primera else "") + "."
+                )
+            if ficha.get("etiquetas"):
+                señales.append(f"Etiquetas: {ficha['etiquetas']}.")
+            if ficha.get("nota_camila"):
+                señales.append(f"Nota del equipo (Camila): {ficha['nota_camila']}")
+            if señales:
+                partes_volatiles.append(
+                    "## Ficha y notas internas del cliente\n"
+                    "Información del equipo para atenderlo mejor (es interna, no la menciones "
+                    "como tal):\n- " + "\n- ".join(señales)
+                )
+
     if conversacion_reciente:
         partes_volatiles.append(
             "## Contexto de esta conversación\n"
@@ -394,3 +443,72 @@ async def generar_respuesta(
         logger.error(f"Error Claude API: {e}")
         await _registrar_metrica()
         return obtener_mensaje_error()
+
+
+# ════════════════════════════════════════════════════════════
+# Resumen de conversaciones largas (memoria de largo plazo)
+# ════════════════════════════════════════════════════════════
+
+async def generar_resumen_conversacion(
+    mensajes: list[dict], resumen_previo: str | None = None
+) -> str:
+    """
+    Resume (o extiende un resumen previo con) un tramo de conversación, para memoria
+    de largo plazo. Devuelve texto plano; nunca lanza (retorna "" si algo falla).
+    """
+    if not mensajes:
+        return resumen_previo or ""
+
+    transcripcion = "\n".join(
+        f"{'Cliente' if m['role'] == 'user' else 'Francisca'}: "
+        f"{m['content'].removeprefix(MARCADOR_HUMANO)}"
+        for m in mensajes
+    )
+
+    instruccion = (
+        "Eres un asistente que resume conversaciones de atención al cliente de "
+        "República Ciclismo. Entrega un resumen breve (máximo 6 líneas), en español, "
+        "en tercera persona. Captura: qué busca el cliente, datos personales relevantes "
+        "(nombre, disciplina, tallas, presupuesto), decisiones o acuerdos y temas "
+        "pendientes. No inventes nada que no aparezca en la conversación."
+    )
+    if resumen_previo:
+        instruccion += (
+            "\n\nYa existe este resumen previo. Intégralo con lo nuevo y devuelve un "
+            "único resumen actualizado (no lo repitas dos veces):\n" + resumen_previo
+        )
+
+    try:
+        resp = await client.messages.create(
+            model=MODELO,
+            max_tokens=400,
+            system=instruccion,
+            messages=[{"role": "user", "content": transcripcion[:12000]}],
+        )
+        return "".join(b.text for b in resp.content if b.type == "text").strip()
+    except Exception as e:
+        logger.warning(f"No se pudo generar el resumen: {e}")
+        return resumen_previo or ""
+
+
+async def actualizar_resumen_si_corresponde(telefono: str):
+    """
+    Si la conversación ya es larga, (re)genera de forma incremental el resumen de
+    largo plazo. Pensada para correr en background tras responder: es tolerante a
+    fallos y nunca debe romper el flujo del webhook.
+    """
+    try:
+        total = await contar_mensajes(telefono)
+        if total < UMBRAL_RESUMEN:
+            return
+        meta = await obtener_resumen_meta(telefono)
+        desde_id = meta.get("resumen_hasta_id") or 0
+        nuevos, hasta_id = await mensajes_para_resumen(telefono, VENTANA_VIVA, desde_id)
+        if not nuevos or hasta_id <= desde_id:
+            return  # nada nuevo que resumir
+        resumen = await generar_resumen_conversacion(nuevos, meta.get("resumen"))
+        if resumen:
+            await guardar_resumen(telefono, resumen, hasta_id)
+            logger.info(f"Resumen de largo plazo actualizado para {telefono} (hasta id {hasta_id})")
+    except Exception as e:
+        logger.warning(f"No se pudo actualizar el resumen de {telefono}: {e}")
