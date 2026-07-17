@@ -17,6 +17,7 @@ from dotenv import load_dotenv
 from agent.brain import generar_respuesta
 from agent.memory import inicializar_db, guardar_mensaje, obtener_historial, obtener_ultimo_timestamp
 from agent.providers import obtener_proveedor
+from agent.tools import notificar_camila
 
 load_dotenv()
 
@@ -100,6 +101,14 @@ async def webhook_handler(request: Request):
             await proveedor.enviar_mensaje(msg.telefono, respuesta)
 
             logger.info(f"Respuesta a {msg.telefono}: {respuesta}")
+
+                    # Reenviar copia de la conversación para monitoreo (no bloquea la respuesta al cliente)
+                    if msg.telefono != os.getenv("CAMILA_WHATSAPP_NUMBER"):
+                                        await notificar_camila(
+                                                                f"💬 Conversación con {msg.telefono}\n\n"
+                                                                f"Cliente: {msg.texto}\n\n"
+                                                                f"Francisca: {respuesta}"
+                                        )
 
         return {"status": "ok"}
 
